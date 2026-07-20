@@ -154,6 +154,17 @@ internal static partial class SplitscreenPatch
     private static bool[] _p2CanGrappleChar = new bool[320];
     private static float[] _p1GrappleVisFrame = new float[320];
     private static float[] _p2GrappleVisFrame = new float[320];
+    // Per-player visFrame for fixed grapple points (Grapples.grapple[]).
+    // Vanilla uses a single shared Grapple.visFrame animated in
+    // Grapple.Update against ScrollManager.scroll. In splitscreen scroll
+    // follows P1 during grapples.Update, so points near P2 get their
+    // visFrame hard-reset to 0 and the ring indicator disappears. These
+    // arrays are indexed by slot in Grapples.grapple[] (stable within a
+    // map session) and animated by AnimatePerPlayerVisFrame using a direct
+    // can-grapple check against each player. DrawGrapplesForPlayer reads
+    // these instead of g.visFrame for fixed points.
+    private static float[] _p1GrapplePtVisFrame = new float[64];
+    private static float[] _p2GrapplePtVisFrame = new float[64];
     private static readonly Dictionary<int, Vector2> _cachedRuneDrawLoc = new Dictionary<int, Vector2>();
 
     // MapPickup reflection caches

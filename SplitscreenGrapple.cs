@@ -90,7 +90,6 @@ internal static partial class SplitscreenPatch
 
         var grappleTex = Textures.tex[ParticleManager.spritesTexIdx];
 
-        float viewW = halfRect.Width;
         float viewH = halfRect.Height;
         Vector2 gameSize = ScrollManager.screenSize;
 
@@ -106,11 +105,23 @@ internal static partial class SplitscreenPatch
                 // Use g.point directly (computed during rebuild with validated headVec or a box-based fallback).
                 // No live headVec override here,
                 // because that caused the indicator to drift or jump in splitscreen when headVec came from a different draw pass.
+                //
+                // Position mapping: the game draws into a full-size render
+                // target (screenSize), then CompositeHalves crops the center
+                // half of each target and blits it to each player's half of
+                // the screen. The crop is: src = (cropX, 0, halfW, screenH),
+                // dst = (halfRect.X, 0, halfW, screenH). So a point at
+                // gameScreenPos in the render target ends up at
+                // (gameScreenPos - (cropX, 0)) + (halfRect.X, 0) on screen.
+                // The star particle goes through this crop; the ring must
+                // use the same mapping or it will be offset from the star
+                // (the old formula scaled by viewW/gameSize which compressed
+                // toward center, placing the ring between the player and the
+                // grapple point instead of at the point).
                 Vector2 gameScreenPos = ScrollManager.GetScreenLoc(g.point, 0);
-                Vector2 viewportPos = new Vector2(
-                    viewW / 2f + (gameScreenPos.X - gameSize.X / 2f) * (viewW / gameSize.X),
-                    viewH / 2f + (gameScreenPos.Y - gameSize.Y / 2f) * (viewH / gameSize.Y)
-                );
+                Vector2 drawPosBase = new Vector2(
+                    halfRect.X + gameScreenPos.X - cropX,
+                    gameScreenPos.Y);
 
                 // charIdx stun-ring (sprite 0, elliptical, 2 rings)
                 if (g.charIdx >= 0 && g.charIdx < CharMgr.character.Length)
@@ -133,7 +144,7 @@ internal static partial class SplitscreenPatch
                         {
                             for (int j = 0; j < 2; j++)
                             {
-                                Vector2 stunDrawPos = new Vector2(halfRect.X + viewportPos.X, viewportPos.Y);
+                                Vector2 stunDrawPos = drawPosBase;
                                 grappleTex.Draw(
                                     stunDrawPos, 0,
                                     ScrollManager.cannedDepth[0] * new Vector2(2f, 0.5f) * num4,
@@ -144,30 +155,54 @@ internal static partial class SplitscreenPatch
                     }
                 }
 
-                // visFrame indicator rings (sprite 94, 3 rings)
-                // Use per-player visFrame,
-                // so each player only sees indicators for enemies they can actually grapple.
-                float playerVisFrame = 0f;
-                if (g.charIdx >= 0 && g.charIdx < 320)
+                // visFrame indicator rings (sprite 94, 3 rings).
+                // Use per-player visFrame so each player only sees
+                // indicators for points/chars they can actually grapple.
+                // For fixed grapple points (pass 0, charIdx < 0) the array
+                // is indexed by slot in grapple[]; for char grapples
+                // (pass 1) it is indexed by charIdx.
+                float playerVisFrame;
+                if (pass == 0)
+                {
+                    playerVisFrame = player.ID == 0
+                        ? _p1GrapplePtVisFrame[i]
+                        : _p2GrapplePtVisFrame[i];
+                }
+                else if (g.charIdx >= 0 && g.charIdx < 320)
                 {
                     playerVisFrame = player.ID == 0
                         ? _p1GrappleVisFrame[g.charIdx]
                         : _p2GrappleVisFrame[g.charIdx];
                 }
+                else
+                {
+                    continue;
+                }
                 if (playerVisFrame <= 0f) continue;
 
                 float t = playerVisFrame;
 
-                // No clamping in splitscreen,
-                // because the indicator must stay exactly at the character's head.
-                // Vanilla's edge-clamping pushes the indicator toward the screen center,
-                // and looks wrong on a half-width viewport,
-                // so we draw at the raw position.
+                // Edge-clamp the ring indicator only when the grapple point
+                // is near or past the edge of the half-viewport (within 10%
+                // of any edge). When the point is comfortably in view, draw
+                // at the exact position (no clamp) so the ring stays on the
+                // star. When within the 10% edge margin, clamp to 10% from
+                // the edge so the ring stays on-screen.
                 float num8 = viewH / gameSize.Y * t
                              + (float)Math.Sin(t * Math.PI) * 0.45f;
                 num8 *= 0.3f;
 
-                Vector2 drawPos = new Vector2(halfRect.X + viewportPos.X, viewportPos.Y);
+                Vector2 drawPos = drawPosBase;
+
+                // Clamp only in the 10% edge band.
+                float edgeXMin = halfRect.X + halfRect.Width * 0.10f;
+                float edgeXMax = halfRect.X + halfRect.Width * 0.90f;
+                float edgeYMin = halfRect.Height * 0.10f;
+                float edgeYMax = halfRect.Height * 0.90f;
+                if (drawPos.X < edgeXMin) drawPos.X = edgeXMin;
+                if (drawPos.X > edgeXMax) drawPos.X = edgeXMax;
+                if (drawPos.Y < edgeYMin) drawPos.Y = edgeYMin;
+                if (drawPos.Y > edgeYMax) drawPos.Y = edgeYMax;
 
                 for (int j = 0; j < 3; j++)
                 {
@@ -177,6 +212,54 @@ internal static partial class SplitscreenPatch
                         ScrollManager.cannedDepth[0] * new Vector2(1f, 1f) * num8,
                         t + j * 2.0943952f,
                         1f, 1f, 1f, 0.5f, 0.65005004f);
+                }
+            }
+        }
+    }
+
+    // Grapple star sparkle fix for splitscreen.
+    // Grapple.Update advances this.frame and spawns the star sparkle
+    // (AddAdditiveParticle 81) only when the point is within ~1000-2000
+    // units of ScrollManager.scroll. In splitscreen scroll follows P1
+    // during grapples.Update, so points near P2 stop spawning the star
+    // when P1 moves away. Prefix saves the frame; postfix advances it
+    // and spawns the star when the point is near P2 but was culled.
+    private static FieldInfo _grappleRandField =
+        AccessTools.Field(typeof(Grapple), "Rand");
+
+    [HarmonyPrefix]
+    [HarmonyPatch(typeof(Grapple), "Update")]
+    private static void Grapple_Update_Prefix(Grapple __instance, out float __state)
+    {
+        __state = __instance.frame;
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(Grapple), "Update")]
+    private static void Grapple_Update_Postfix(Grapple __instance, float frameTime, float __state)
+    {
+        if (!SplitActive || !_hasP2) return;
+
+        // If vanilla advanced the frame, the point was within P1's scroll
+        // and the star already spawned. Nothing to do.
+        if (Math.Abs(__instance.frame - __state) > 0.0001f) return;
+
+        Vector2 loc = __instance.point;
+        Vector2 p2Scroll = ScrollFor(_p2Loc);
+
+        // Match vanilla's culling range: 1000 normally, 2000 when zoomed out.
+        float num = ScrollManager.zoom < -25f ? 2000f : 1000f;
+
+        if (loc.X > p2Scroll.X - num && loc.X < p2Scroll.X + num &&
+            loc.Y > p2Scroll.Y - 1000f && loc.Y < p2Scroll.Y + 1000f)
+        {
+            __instance.frame += frameTime;
+            if (__instance.frame > 1f)
+            {
+                __instance.frame -= 0.7f; // midpoint of Rand(0.6, 0.8)
+                if (__instance.col != 22 || GameSessionMgr.gameSession.lunaFrame > 0f)
+                {
+                    ParticleManager.AddAdditiveParticle(81, loc, default(Vector2), 0f, 0f, 0, 0, -1);
                 }
             }
         }
