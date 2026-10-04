@@ -1,6 +1,7 @@
 using System;
 using System.Text;
 using Common;
+using HarmonyLib;
 using Menumancer.hud;
 using ProjectMage.config;
 using ProjectMage.director;
@@ -9,27 +10,22 @@ using ProjectMage.player;
 namespace SaS2SplitScreen;
 
 // ============================================================================
-// F11 diagnostic view (debug build).
+// Diagnostic views (developer tooling, off by default).
 //
-// Result of the previous round: the effect is already inside the NON-crossing player's own render target (modes "P1 on both halves" and "P2 on both halves" both showed it), while every value the log can see for that pass is settled.
-// This round bisects INSIDE that pass. Each F11 press cycles the modes below; the mode is printed in red top-left and logged as [DIAG].
+// Enabled by the BepInEx config entry Debug > Diagnostics (not shown in Mod Options). While it is off, DiagMode is always 0 and nothing here runs.
+// When it is on, F11 cycles the modes below; the active mode is printed in red top-left and logged as [DIAG]. Every mode changes only how the already-rendered pass targets are composited.
 //
-// Test for every mode: park P2 next to a cave boundary, then walk P2 in and out while watching the BIG view. Ignore the small inset (it is the crossing player and is expected to show the effect).
-//
+//   0  normal
 //   1  P1's pass, stage 1: scene before refraction        (GameDraw.backTarg)
 //   2  P1's pass, stage 2: after refraction + foreground  (GameDraw.auxTarg)
 //   3  P1's pass, stage 3: post-processed, before bloom   (GameDraw.sceneTarg)
 //   4  P2's pass SKIPPED; P1's final render on both halves; P2's layer state printed as text
-//   5  P1's final render on both halves (inset: P2)        (previous mode 1)
-//   6  P2's final render on both halves (inset: P1)        (previous mode 2)
-//   7  normal composite, nothing drawn after it            (previous mode 3)
-//   8  normal view with separate P2 scene targets ON (did not matter last round)
-//   9  normal view with the per-player background-alpha fix OFF, for A/B against mode 0 (see BackgroundAlphaPatch.cs)
+//   5  P1's final render on both halves (inset: P2)
+//   6  P2's final render on both halves (inset: P1)
+//   7  normal composite, nothing drawn after it
+//   8  normal view with the background-alpha fix OFF, for A/B (see BackgroundAlphaPatch.cs)
 //
-// Reading the results:
-//   effect first appears in stage N          -> it is produced between stage N-1 and N (1 = map/particles/chars, 2 = refraction + foreground layers + glows, 3 = post effect, none = bloom/light/vignette).
-//   effect gone in mode 4                    -> carried over from the previous P2 DRAW pass.
-//   effect still there in mode 4             -> comes from world/update state that real crossings change, not from draw state.
+// Use: put the pass you want to inspect on screen, then provoke the effect with the OTHER player (e.g. walk them through a cave entrance).
 // ============================================================================
 
 internal static partial class SplitscreenPatch
@@ -41,8 +37,7 @@ internal static partial class SplitscreenPatch
     private const int ModeP1Both = 5;
     private const int ModeP2Both = 6;
     private const int ModeNoOverlays = 7;
-    private const int ModeIsolationOn = 8;
-    private const int ModeBgAlphaFixOff = 9;
+    private const int ModeBgAlphaFixOff = 8;
 
     private static bool _diagKeyDown;
 
@@ -56,7 +51,6 @@ internal static partial class SplitscreenPatch
         "P1 final on both halves (inset: P2)",
         "P2 final on both halves (inset: P1)",
         "composite only, no overlays/HUD",
-        "separate P2 scene targets ON (test only)",
         "background-alpha fix OFF (previous behaviour)"
     ];
 
@@ -64,15 +58,57 @@ internal static partial class SplitscreenPatch
     private static RenderTarget2D _diagStage;
     private static bool _diagStageFailed;
 
-    private static int DiagMode { get; set; }
+    private static int _diagMode;
+
+    private static bool DiagEnabled => GlobalSettings.Diagnostics?.Value == true;
+
+    // Single choke point: with diagnostics disabled every mode check below sees 0 (normal), even if the config is switched off while a mode is active.
+    private static int DiagMode => DiagEnabled ? _diagMode : 0;
+
+    // Set during the update phase when any player's camera is mid-transition. The draw-phase camMgr swap hides P1's camera during P2's pass, so the loggers read this instead.
+    private static bool _anyCamTransitionLive;
 
     private static bool DiagSkipOverlays => DiagMode == ModeNoOverlays;
     private static bool DiagSkipP2Pass => DiagMode == ModeSkipP2;
-    private static bool DiagIsolationOn => DiagMode == ModeIsolationOn;
     private static bool DiagBgAlphaFixOff => DiagMode == ModeBgAlphaFixOff;
     private static bool DiagStageMode => DiagMode >= ModeStageBack && DiagMode <= ModeStageScene;
 
-    // Edge-detected once per frame from the same hook as F9/F10.
+    // Runs on every camera update; the key is polled once per frame, from P1's camera (which updates every tick in splitscreen).
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(CamMgr), "Update")]
+    // ReSharper disable once InconsistentNaming
+    private static void CamMgr_Update_Diag_Postfix(CamMgr __instance)
+    {
+        if (!DiagEnabled)
+        {
+            _diagMode = 0;
+            _anyCamTransitionLive = false;
+            return;
+        }
+
+        if (!SplitActive) return;
+
+        UpdateTransitionLiveFlag();
+
+        if (__instance != PlayerMgr.player[0].camMgr) return;
+        PollDiagKey();
+    }
+
+    private static void UpdateTransitionLiveFlag()
+    {
+        _anyCamTransitionLive = false;
+        if (PlayerMgr.player == null) return;
+
+        foreach (var player in PlayerMgr.player)
+        {
+            var cm = player?.camMgr;
+            if (cm == null || cm.curLayer == cm.prevLayer || cm.layerTransitionFrame >= 1f) continue;
+            _anyCamTransitionLive = true;
+            return;
+        }
+    }
+
+    // Edge-detected once per frame.
     private static void PollDiagKey()
     {
         var isDown = FrameworkImpl.GetKeyState(Keys.F11) == KeyState.Down;
@@ -80,8 +116,8 @@ internal static partial class SplitscreenPatch
         _diagKeyDown = isDown;
         if (!pressed) return;
 
-        DiagMode = (DiagMode + 1) % DiagLabels.Length;
-        Log($"[DIAG] F11 view mode {DiagMode}: {DiagLabels[DiagMode]}");
+        _diagMode = (_diagMode + 1) % DiagLabels.Length;
+        Log($"[DIAG] F11 view mode {_diagMode}: {DiagLabels[_diagMode]}");
     }
 
     private static void EnsureDiagStage()

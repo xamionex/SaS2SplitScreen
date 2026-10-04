@@ -7,15 +7,15 @@ using SalmonMaps.map;
 namespace SaS2SplitScreen;
 
 // ============================================================================
-// Per-player background alpha.
+// Per-player background alpha (the fix for the cave-transition leak).
 //
-// The tint effect used for the sky/background (GameDraw.bloomTintGradientEffect) has an alpha parameter "a" that only MapDraw.ResetLayerTintEffect ever writes, and it is written with the alpha of the map layer being drawn (1 - indoors for the outdoor layers while a cave transition is running).
-// GameDraw.DrawBackground, the first draw of a pass, never sets "a"; it relies on whatever the previous draw left there.
-// In the vanilla game that is the same camera's previous frame. With two passes per frame it is the OTHER player's pass, so the player who is mid-transition hands their fading alpha to the next pass, and the effect shows on a player who never moved.
+// The tint effect used for the sky/background (GameDraw.bloomTintGradientEffect) has an alpha parameter "a" that only MapDraw.ResetLayerTintEffect ever writes, with the alpha of the map layer being drawn.
+// While a cave transition runs, the outdoor layers are drawn with 1 - indoors, so "a" dips below 1.
+// GameDraw.DrawBackground, the first draw of a pass, never sets "a"; it uses whatever the previous draw left there.
+// In vanilla that is the same camera's previous frame. With two passes per frame it is the OTHER player's pass, so a player who is mid-transition handed their fading alpha to the next pass, and the transition showed on a player who never moved.
 //
-// Evidence for it: the effect is present already at the first stage of the other player's pass, only appears when the crossing player's draw pass really runs, survives separate render targets, and every logged input of the affected pass is settled.
-//
-// Fix: remember the value each pass leaves behind and put the player's OWN value back before that player's DrawBackground, which is exactly what a single-camera game does. F11 mode 9 turns the fix off for an A/B.
+// Fix: remember the value each pass leaves behind and put the player's OWN value back before that player's DrawBackground, which is what a single-camera game does.
+// With Debug > Diagnostics enabled, F11 mode 8 turns this off for an A/B comparison.
 // ============================================================================
 
 internal static partial class SplitscreenPatch

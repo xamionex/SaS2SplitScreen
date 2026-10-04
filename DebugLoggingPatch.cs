@@ -13,10 +13,10 @@ using SalmonMaps.map;
 namespace SaS2SplitScreen;
 
 // ============================================================================
-// Per-pass render instrumentation (debug build).
+// Per-pass render instrumentation (developer tooling, off by default).
 //
-// Logs exactly what each split-screen pass draws the background with, plus the shared/session globals that a global fullscreen draw could consume.
-// Purpose: with the F9/F10 debug triggers, a single test run shows which pass rendered the transition circle and which shared value animated it.
+// Logs what each split-screen pass draws the background with ([BG]) and the shared bloom/light/particle globals ([GLOBAL]).
+// Only active with the BepInEx config entry Debug > Diagnostics enabled; otherwise both patches return immediately.
 // ============================================================================
 
 internal static partial class SplitscreenPatch
@@ -26,14 +26,14 @@ internal static partial class SplitscreenPatch
     private static int _lastLogTickP1;
     private static int _lastLogTickP2;
 
-    // Logs the shared bloom/light state each pass would consume if the transition were drawn globally, plus the full-screen draw suspects.
-    // Unthrottled while any camera is mid-transition (flag set in the update phase, since the draw-phase camMgr swap hides P2's live state), so a single F9 run captures EVERY frame of both passes.
+    // [GLOBAL] is unthrottled while any camera is mid-transition (flag set in the update phase), so a run captures every frame of both passes.
     private static int _lastSharedTick;
 
     [HarmonyPostfix]
     [HarmonyPatch(typeof(GameDraw), "DrawBackground", typeof(Map), typeof(Player))]
     private static void DrawBackground_Postfix(Map map, Player p)
     {
+        if (!DiagEnabled) return;
         try
         {
             if (!IsLocalCoop() || !SplitActive) return;
@@ -72,6 +72,7 @@ internal static partial class SplitscreenPatch
     [HarmonyPatch(typeof(GameDraw), "DrawGame")]
     private static void DrawGame_Log_Postfix()
     {
+        if (!DiagEnabled) return;
         if (!IsLocalCoop() || !SplitActive) return;
         var live = _anyCamTransitionLive;
         var now = Environment.TickCount;

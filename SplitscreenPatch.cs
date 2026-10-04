@@ -256,10 +256,9 @@ internal static partial class SplitscreenPatch
         return c.loc + new Vector2(0f, -headOff);
     }
 
-    // BloomComponent.Draw prefix - redirect goalTarg, and set the bloom combine shader parameters that BloomComponent.Draw does NOT set:
-    // BloomVignette, lightThresh, darkBlur, BloomTexture.
-    // These retain stale values from the previous pass otherwise, so P1's live transition vignette painted onto P2's half (the "black circle" on the wrong side).
-    // Setting them here, per pass, from each player's own bloom statics (already updated by PrepareMainEffect in DrawGame_Prefix), stops the leak.
+    // BloomComponent.Draw prefix - redirect goalTarg to the active pass's capture target, and set the bloom combine shader parameters that BloomComponent.Draw does NOT set: BloomVignette, lightThresh, darkBlur.
+    // The decompiled game never writes these three anywhere, so they cannot carry state between the passes; setting them here from the pass's own bloom statics is a deviation from vanilla that predates the real fix (BackgroundAlphaPatch).
+    // Kept so the picture does not change; it is a candidate for removal if vanilla's look is preferred.
     [HarmonyPrefix]
     [HarmonyPatch(typeof(BloomComponent), "Draw")]
     private static void BloomDraw_Prefix(ref RenderTarget2D goalTarg)
@@ -341,7 +340,8 @@ internal static partial class SplitscreenPatch
             SetScroll(ScrollFor(_p1Loc));
 
             // Prepare P1's layer state BEFORE the pass. GameDraw.DrawGame consumes the layer globals (glowMgr.alpha, glowMgr.lightFac) at line 165 (glowMgr.Draw), which runs BEFORE its own PrepareMainEffect at line 168.
-            // The P2 pass already prepares in DrawGame_Postfix; without this, P1's pass draws with P2's stale values, and P2's pass draws the lightmap with P1's LIVE transition values - the sharp "vignette circle" that leaked onto P2's half.
+            // Single-camera vanilla therefore uses its own previous frame's values; with two passes it would use the OTHER player's.
+            // The P2 pass does the same in DrawGame_Postfix.
             var p1 = PlayerMgr.player[0];
             LayerTintCatalog.PrepareMainEffect(p1.camMgr.curLayer, p1.camMgr.prevLayer, p1.camMgr.layerTransitionFrame,
                 p1);
@@ -387,18 +387,7 @@ internal static partial class SplitscreenPatch
         var savedCam = PlayerMgr.player[0].camMgr;
         try
         {
-            // EXPERIMENT: settle P1's camera during P2's pass.
-            // If the vignette disappears from P2's half, P2's pass reads P1's LIVE camera state directly somewhere.
-            var p1Cam = PlayerMgr.player[0].camMgr;
-            int p1Cur = p1Cam.curLayer, p1Prev = p1Cam.prevLayer;
-            float p1Ltf = p1Cam.layerTransitionFrame, p1Ind = p1Cam.indoors;
-            p1Cam.prevLayer = p1Cam.curLayer;
-            p1Cam.layerTransitionFrame = 1f;
-            if (LayerTintCatalog.layerTintData != null
-                && p1Cam.curLayer >= 0
-                && p1Cam.curLayer < LayerTintCatalog.layerTintData.Count)
-                p1Cam.indoors = LayerTintCatalog.layerTintData[p1Cam.curLayer].indoorf;
-
+            // DrawGame reads the camera through PlayerMgr.player[0], so P2's pass runs with P2's camera swapped in.
             PlayerMgr.player[0].camMgr = PlayerMgr.player[1].camMgr;
 
             var p2 = PlayerMgr.player[0];
@@ -406,19 +395,11 @@ internal static partial class SplitscreenPatch
                 p2.camMgr.curLayer, p2.camMgr.prevLayer,
                 p2.camMgr.layerTransitionFrame, p2);
 
-            // Separate P2 scene targets are off unless F11 mode 8 is selected (they did not change the leak).
-            SwapToP2Targets();
-
             if (!DiagSkipP2Pass)
             {
                 _drawGameMethod?.Invoke(_dgInst, null);
                 CaptureBgAlpha(true);
             }
-
-            p1Cam.curLayer = p1Cur;
-            p1Cam.prevLayer = p1Prev;
-            p1Cam.layerTransitionFrame = p1Ltf;
-            p1Cam.indoors = p1Ind;
         }
         catch (Exception e)
         {
@@ -426,7 +407,6 @@ internal static partial class SplitscreenPatch
         }
         finally
         {
-            RestoreP1Targets();
             PlayerMgr.player[0].camMgr = savedCam;
             _inP2Pass = false;
         }
