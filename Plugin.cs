@@ -16,9 +16,9 @@ namespace SaS2SplitScreen;
 public class SaS2SplitScreen : BasePlugin
 {
     internal static SaS2SplitScreen Instance;
-    private Harmony _harmony;
     private FileSystemWatcher _configWatcher;
     private Timer _debounceTimer;
+    private Harmony _harmony;
 
     public override void Load()
     {
@@ -69,10 +69,8 @@ public class SaS2SplitScreen : BasePlugin
     {
         var order = 0;
 
-        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.SplitscreenEnabled,
-            "Splitscreen", "Splitscreen", order += 1);
-        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.IndependentDoors,
-            "Splitscreen", "Allow P1 and P2 to travel through doors independently", order += 1);
+        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.SplitscreenEnabled, "Splitscreen", "Splitscreen", order += 1);
+        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.IndependentDoors, "Splitscreen", "Allow P1 and P2 to travel through doors independently", order += 1);
     }
 
     public override bool Unload()

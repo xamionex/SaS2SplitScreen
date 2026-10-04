@@ -2,27 +2,18 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
+using Bestiary.monsters;
 using Common;
 using HarmonyLib;
 using Menumancer.hud;
-using Menumancer.UIFormat;
-using ProjectMage;
 using ProjectMage.character;
 using ProjectMage.config;
 using ProjectMage.director;
 using ProjectMage.gamestate;
-using ProjectMage.gamestate.arenastate;
-using ProjectMage.gamestate.outro;
-using ProjectMage.map.entities;
 using ProjectMage.map.pickups;
-using ProjectMage.particles;
-using ProjectMage.gamestate.mage;
 using ProjectMage.player;
-using ProjectMage.player.menu;
-using ProjectMage.texturesheet;
 using SalmonMaps.director.bloom;
 using SalmonMaps.map;
-using Bestiary.monsters;
 
 namespace SaS2SplitScreen;
 
@@ -30,19 +21,103 @@ namespace SaS2SplitScreen;
 [HarmonyPatch]
 internal static partial class SplitscreenPatch
 {
+    // Capture render targets
+    private static RenderTarget2D _splitP1Targ;
+    private static RenderTarget2D _splitP2Targ;
+    private static bool _targCreated;
+
+    // Skip flags for original drawing
+    private static bool _skipGeneralHud;
+    private static bool _skipGrapples;
+
+    // Per-frame state
+    private static bool _inSplitDraw;
+    private static bool _inP2Pass;
+    private static Vector2 _savedScroll;
+    private static object _dgInst;
+    private static Vector2 _p1Loc, _p2Loc, _midpoint;
+    private static MethodInfo _drawGameMethod;
+
+    private static readonly Vector2 BaseCamOffset = new(0f, -100f);
+
+    // ScrollManager.scroll
+    private static bool _scrollInit;
+    private static FieldInfo _scrollField;
+
+    // Player helpers with reflection for internal methods
+    private static readonly MethodInfo GetMainPlayerMethod;
+    private static readonly MethodInfo GetLocalCoopPlayerMethod;
+    private static readonly MethodInfo IsLocalCoopModeMethod;
+    private static readonly MethodInfo PlayerGetCharacterMethod;
+    private static readonly MethodInfo CharMgrGetVisMethod;
+    private static readonly FieldInfo PlayerHpBarFrameField;
+    private static readonly MethodInfo PlayerMgrDrawMethod = AccessTools.Method(typeof(PlayerMgr), "Draw");
+    private static readonly MethodInfo CharAnimSetAnimMethod;
+    private static readonly MethodInfo GetCharUseMethod;
+    private static readonly FieldInfo CharRectsCharacterField;
+    private static readonly Dictionary<int, float> CachedTopY = new();
+    private static readonly int[] P1CharsBackup = new int[320];
+    private static int _p1CharsCount;
+    private static readonly int[] P2CharsBackup = new int[320];
+    private static int _p2CharsCount;
+    private static int _lastActiveCharsLogTick;
+    private static int _lastArenaDeactivateLogTick;
+    private static readonly int[] MergedActiveChars = new int[320];
+    private static int _mergedActiveCharsCount;
+    private static readonly bool[] P1CanGrappleChar = new bool[320];
+    private static readonly bool[] P2CanGrappleChar = new bool[320];
+    private static readonly float[] P1GrappleVisFrame = new float[320];
+
+    private static readonly float[] P2GrappleVisFrame = new float[320];
+
+    // Per-player visFrame for fixed grapple points (Grapples.grapple[]).
+    // Vanilla uses a single shared Grapple.visFrame animated in Grapple.Update against ScrollManager.scroll.
+    // In splitscreen scroll follows P1 during grapples.Update, so points near P2 get their visFrame hard-reset to 0 and the ring indicator disappears.
+    // These arrays are indexed by slot in Grapples.grapple[] (stable within a map session) and animated by AnimatePerPlayerVisFrame using a direct can-grapple check against each player.
+    // DrawGrapplesForPlayer reads these instead of g.visFrame for fixed points.
+    private static readonly float[] P1GrapplePtVisFrame = new float[64];
+    private static readonly float[] P2GrapplePtVisFrame = new float[64];
+    private static readonly Dictionary<int, Vector2> CachedRuneDrawLoc = new();
+
+    // MapPickup reflection caches
+    private static readonly FieldInfo MapPickupFrameField = AccessTools.Field(typeof(MapPickup), "frame");
+
+    private static readonly FieldInfo MapPickupCharIdxField = AccessTools.Field(typeof(MapPickup), "charIdx");
+
+    private static readonly FieldInfo MapPickupRandField = AccessTools.Field(typeof(MapPickup), "Rand");
+
+    // SaS2IndicatorsColorChanger integration
+    private static Type _iccType;
+    private static PropertyInfo _iccMainColorProp;
+    private static PropertyInfo _iccCoopColorProp;
+    private static bool _iccChecked;
+    private static bool _iccColorReadSucceeded;
+
+    static SplitscreenPatch()
+    {
+        GetMainPlayerMethod = AccessTools.Method(typeof(PlayerMgr), "GetMainPlayer");
+        GetLocalCoopPlayerMethod = AccessTools.Method(typeof(PlayerMgr), "GetLocalCoopPlayer");
+        IsLocalCoopModeMethod = AccessTools.Method(typeof(PlayerMgr), "IsLocalCoopMode");
+        PlayerGetCharacterMethod = AccessTools.Method(typeof(Player), "GetCharacter");
+        CharMgrGetVisMethod = AccessTools.Method(typeof(CharMgr), "GetVis", [typeof(Character), typeof(bool)]);
+        PlayerHpBarFrameField = AccessTools.Field(typeof(Player), "hpBarFrame");
+        CharAnimSetAnimMethod = AccessTools.Method(typeof(CharAnim), "SetAnim", [typeof(string), typeof(bool), typeof(bool)]);
+        GetCharUseMethod = AccessTools.Method(typeof(PlayerPrompts), "GetCharUse", [typeof(Character)]);
+        CharRectsCharacterField = AccessTools.Field(typeof(CharRects), "character");
+    }
+
     // Active guard
     private static bool SplitActive =>
         GlobalSettings.SplitscreenEnabled?.Value == true
         && GameState.state == 1
         && IsLocalCoop();
 
-    // Capture render targets
-    private static RenderTarget2D _splitP1Targ;
-    private static RenderTarget2D _splitP2Targ;
-    private static bool _targCreated;
-    internal static bool HasP2 => _hasP2;
+    internal static bool HasP2 { get; private set; }
+
     internal static Vector2 P1Loc => _p1Loc;
     internal static Vector2 P2Loc => _p2Loc;
+
+    private static bool ShouldSkipIndicators { get; set; }
 
     private static void EnsureTargets()
     {
@@ -56,14 +131,8 @@ internal static partial class SplitscreenPatch
 
         try
         {
-            _splitP1Targ = FrameworkImpl.CreateRenderTarget2D(
-                "splitP1", gfx, w, h, false,
-                ConfigMgr.surfaceFormat, DepthFormat.None, 0,
-                RenderTargetUsage.DiscardContents);
-            _splitP2Targ = FrameworkImpl.CreateRenderTarget2D(
-                "splitP2", gfx, w, h, false,
-                ConfigMgr.surfaceFormat, DepthFormat.None, 0,
-                RenderTargetUsage.DiscardContents);
+            _splitP1Targ = FrameworkImpl.CreateRenderTarget2D("splitP1", gfx, w, h, false, ConfigMgr.surfaceFormat, DepthFormat.None, 0, RenderTargetUsage.DiscardContents);
+            _splitP2Targ = FrameworkImpl.CreateRenderTarget2D("splitP2", gfx, w, h, false, ConfigMgr.surfaceFormat, DepthFormat.None, 0, RenderTargetUsage.DiscardContents);
             Log($"[Splitscreen] Capture targets created ({w}x{h}).");
         }
         catch (Exception e)
@@ -71,28 +140,6 @@ internal static partial class SplitscreenPatch
             Warn($"[Splitscreen] EnsureTargets: {e.Message}");
         }
     }
-
-    // Skip flags for original drawing
-    private static bool _skipIndicators = false;
-    private static bool _skipGeneralHud = false;
-    private static bool _skipGrapples = false;
-
-    public static bool ShouldSkipIndicators => _skipIndicators;
-
-    // Per-frame state
-    private static bool _inSplitDraw;
-    private static bool _inP2Pass;
-    private static Vector2 _savedScroll;
-    private static object _dgInst;
-    private static Vector2 _p1Loc, _p2Loc, _midpoint;
-    private static bool _hasP2;
-    private static MethodInfo _drawGameMethod;
-
-    private static readonly Vector2 _baseCamOffset = new Vector2(0f, -100f);
-
-    // ScrollManager.scroll
-    private static bool _scrollInit;
-    private static FieldInfo _scrollField;
 
     private static bool TryAcquireScroll()
     {
@@ -126,61 +173,20 @@ internal static partial class SplitscreenPatch
         return true;
     }
 
-    private static Vector2 GetScroll() => (Vector2)_scrollField.GetValue(null);
-    private static void SetScroll(Vector2 v) => _scrollField.SetValue(null, v);
-    private static Vector2 ScrollFor(Vector2 p) => p + _baseCamOffset;
+    private static Vector2 GetScroll()
+    {
+        return (Vector2)_scrollField.GetValue(null);
+    }
 
-    // Player helpers with reflection for internal methods
-    private static MethodInfo _getMainPlayerMethod;
-    private static MethodInfo _getLocalCoopPlayerMethod;
-    private static MethodInfo _isLocalCoopModeMethod;
-    private static MethodInfo _playerGetCharacterMethod;
-    private static MethodInfo _charMgrGetVisMethod;
-    private static FieldInfo _playerHpBarFrameField;
-    private static MethodInfo _playerMgrDrawMethod = AccessTools.Method(typeof(PlayerMgr), "Draw");
-    private static MethodInfo _charAnimSetAnimMethod;
-    private static MethodInfo _getCharUseMethod;
-    private static FieldInfo _charRectsCharacterField;
-    private static Dictionary<int, float> _cachedTopY = new Dictionary<int, float>();
-    private static int[] _p1CharsBackup = new int[320];
-    private static int _p1CharsCount = 0;
-    private static int[] _p2CharsBackup = new int[320];
-    private static int _p2CharsCount = 0;
-    private static int _lastActiveCharsLogTick = 0;
-    private static int _lastArenaDeactivateLogTick = 0;
-    private static int[] _mergedActiveChars = new int[320];
-    private static int _mergedActiveCharsCount = 0;
-    private static bool[] _p1CanGrappleChar = new bool[320];
-    private static bool[] _p2CanGrappleChar = new bool[320];
-    private static float[] _p1GrappleVisFrame = new float[320];
-    private static float[] _p2GrappleVisFrame = new float[320];
-    // Per-player visFrame for fixed grapple points (Grapples.grapple[]).
-    // Vanilla uses a single shared Grapple.visFrame animated in
-    // Grapple.Update against ScrollManager.scroll. In splitscreen scroll
-    // follows P1 during grapples.Update, so points near P2 get their
-    // visFrame hard-reset to 0 and the ring indicator disappears. These
-    // arrays are indexed by slot in Grapples.grapple[] (stable within a
-    // map session) and animated by AnimatePerPlayerVisFrame using a direct
-    // can-grapple check against each player. DrawGrapplesForPlayer reads
-    // these instead of g.visFrame for fixed points.
-    private static float[] _p1GrapplePtVisFrame = new float[64];
-    private static float[] _p2GrapplePtVisFrame = new float[64];
-    private static readonly Dictionary<int, Vector2> _cachedRuneDrawLoc = new Dictionary<int, Vector2>();
+    private static void SetScroll(Vector2 v)
+    {
+        _scrollField.SetValue(null, v);
+    }
 
-    // MapPickup reflection caches
-    private static readonly FieldInfo _mapPickupFrameField =
-        AccessTools.Field(typeof(MapPickup), "frame");
-    private static readonly FieldInfo _mapPickupCharIdxField =
-        AccessTools.Field(typeof(MapPickup), "charIdx");
-    private static readonly FieldInfo _mapPickupRandField =
-        AccessTools.Field(typeof(MapPickup), "Rand");
-
-    // SaS2IndicatorsColorChanger integration
-    private static Type _iccType;
-    private static PropertyInfo _iccMainColorProp;
-    private static PropertyInfo _iccCoopColorProp;
-    private static bool _iccChecked;
-    private static bool _iccColorReadSucceeded;
+    private static Vector2 ScrollFor(Vector2 p)
+    {
+        return p + BaseCamOffset;
+    }
 
     private static void TryInitIcc()
     {
@@ -188,159 +194,142 @@ internal static partial class SplitscreenPatch
         _iccChecked = true;
         _iccType = Type.GetType("SaS2IndicatorsColorChanger.Plugin, amione.SaS2IndicatorsColorChanger");
         if (_iccType == null) return;
-        _iccMainColorProp = _iccType.GetProperty("MainPlayerMarkerColor",
-            BindingFlags.Public | BindingFlags.Static);
-        _iccCoopColorProp = _iccType.GetProperty("CoopPlayerMarkerColor",
-            BindingFlags.Public | BindingFlags.Static);
+        _iccMainColorProp = _iccType.GetProperty("MainPlayerMarkerColor", BindingFlags.Public | BindingFlags.Static);
+        _iccCoopColorProp = _iccType.GetProperty("CoopPlayerMarkerColor", BindingFlags.Public | BindingFlags.Static);
         _iccColorReadSucceeded = _iccMainColorProp != null && _iccCoopColorProp != null;
-    }
-
-    static SplitscreenPatch()
-    {
-        _getMainPlayerMethod = AccessTools.Method(typeof(PlayerMgr), "GetMainPlayer");
-        _getLocalCoopPlayerMethod = AccessTools.Method(typeof(PlayerMgr), "GetLocalCoopPlayer");
-        _isLocalCoopModeMethod = AccessTools.Method(typeof(PlayerMgr), "IsLocalCoopMode");
-        _playerGetCharacterMethod = AccessTools.Method(typeof(Player), "GetCharacter");
-        _charMgrGetVisMethod = AccessTools.Method(typeof(CharMgr), "GetVis", new[] { typeof(Character), typeof(bool) });
-        _playerHpBarFrameField = AccessTools.Field(typeof(Player), "hpBarFrame");
-        _charAnimSetAnimMethod = AccessTools.Method(typeof(CharAnim), "SetAnim",
-            new[] { typeof(string), typeof(bool), typeof(bool) });
-        _getCharUseMethod = AccessTools.Method(typeof(PlayerPrompts), "GetCharUse",
-            new[] { typeof(Character) });
-        _charRectsCharacterField = AccessTools.Field(typeof(CharRects), "character");
     }
 
     private static bool IsLocalCoop()
     {
-        if (_isLocalCoopModeMethod == null) return false;
-        return (bool)_isLocalCoopModeMethod.Invoke(null, null);
+        if (IsLocalCoopModeMethod == null) return false;
+        return (bool)IsLocalCoopModeMethod.Invoke(null, null);
     }
 
     private static Player MainPlayer()
     {
-        if (_getMainPlayerMethod == null) return null;
-        return (Player)_getMainPlayerMethod.Invoke(null, null);
+        if (GetMainPlayerMethod == null) return null;
+        return (Player)GetMainPlayerMethod.Invoke(null, null);
     }
 
     private static Player CoopPlayer()
     {
-        if (_getLocalCoopPlayerMethod == null) return null;
-        return (Player)_getLocalCoopPlayerMethod.Invoke(null, null);
+        if (GetLocalCoopPlayerMethod == null) return null;
+        return (Player)GetLocalCoopPlayerMethod.Invoke(null, null);
     }
 
     private static Character GetCharacter(Player player)
     {
-        if (player == null || _playerGetCharacterMethod == null) return null;
-        return (Character)_playerGetCharacterMethod.Invoke(player, null);
+        if (player == null || PlayerGetCharacterMethod == null) return null;
+        return (Character)PlayerGetCharacterMethod.Invoke(player, null);
     }
 
     private static bool CharMgrGetVis(Character c, bool param)
     {
-        if (_charMgrGetVisMethod == null) return false;
-        return (bool)_charMgrGetVisMethod.Invoke(null, new object[] { c, param });
+        if (CharMgrGetVisMethod == null) return false;
+        return (bool)CharMgrGetVisMethod.Invoke(null, [c, param]);
     }
 
     private static float GetPlayerHpBarFrame(Player player)
     {
-        if (player == null || _playerHpBarFrameField == null) return 0f;
-        return (float)_playerHpBarFrameField.GetValue(player);
+        if (player == null || PlayerHpBarFrameField == null) return 0f;
+        return (float)PlayerHpBarFrameField.GetValue(player);
     }
 
     private static Vector2 GetCharGrappleHeadPos(Character c)
     {
-        MonsterDef def = MonsterCatalog.monsterDef[c.monsterIdx];
-        float boxH = def != null ? def.boxHeight : 80;
+        var def = MonsterCatalog.monsterDef[c.monsterIdx];
+        float boxH = def?.boxHeight ?? 80;
 
-        Vector2 headPos = c.draw.headVec;
-        bool headVecValid = headPos != Vector2.Zero
-                            && Math.Abs(headPos.X - c.loc.X) < boxH * 0.6f
-                            && c.loc.Y - headPos.Y > boxH * 0.25f
-                            && c.loc.Y - headPos.Y < boxH * 1.35f;
+        var headPos = c.draw.headVec;
+        var headVecValid = headPos != Vector2.Zero && Math.Abs(headPos.X - c.loc.X) < boxH * 0.6f &&
+                           c.loc.Y - headPos.Y > boxH * 0.25f && c.loc.Y - headPos.Y < boxH * 1.35f;
 
-        if (headVecValid)
-        {
-            return headPos;
-        }
+        if (headVecValid) return headPos;
 
         if (c.draw.drawChest != Vector2.Zero)
         {
-            float chestToHead = boxH * (def != null && def.gameMonster.giant ? 0.5f : 0.35f);
+            var chestToHead = boxH * (def != null && def.gameMonster.giant ? 0.5f : 0.35f);
             return c.draw.drawChest + new Vector2(0f, -chestToHead);
         }
 
-        float headOff = boxH * (def != null && def.gameMonster.giant ? 1.2f : 0.9f);
+        var headOff = boxH * (def != null && def.gameMonster.giant ? 1.2f : 0.9f);
         return c.loc + new Vector2(0f, -headOff);
     }
 
-    // BloomComponent.Draw prefix - redirect goalTarg
+    // BloomComponent.Draw prefix - redirect goalTarg, and set the bloom combine shader parameters that BloomComponent.Draw does NOT set:
+    // BloomVignette, lightThresh, darkBlur, BloomTexture.
+    // These retain stale values from the previous pass otherwise, so P1's live transition vignette painted onto P2's half (the "black circle" on the wrong side).
+    // Setting them here, per pass, from each player's own bloom statics (already updated by PrepareMainEffect in DrawGame_Prefix), stops the leak.
     [HarmonyPrefix]
     [HarmonyPatch(typeof(BloomComponent), "Draw")]
     private static void BloomDraw_Prefix(ref RenderTarget2D goalTarg)
     {
         if (!_inSplitDraw) return;
         EnsureTargets();
-        if (!_inP2Pass && _splitP1Targ != null) goalTarg = _splitP1Targ;
-        else if (_inP2Pass && _splitP2Targ != null) goalTarg = _splitP2Targ;
+        goalTarg = _inP2Pass switch
+        {
+            false when _splitP1Targ != null => _splitP1Targ,
+            true when _splitP2Targ != null => _splitP2Targ,
+            _ => goalTarg
+        };
+
+        // bloomCombineEffect is private, so use reflection.
+        var combineEff = AccessTools.Field(typeof(BloomComponent), "bloomCombineEffect")?.GetValue(null) as Effect;
+        if (combineEff == null) return;
+        combineEff.Parameters["BloomVignette"].SetValue(BloomComponent.bloomVignette);
+        combineEff.Parameters["lightThresh"].SetValue(BloomComponent.bloomThreshhold);
+        combineEff.Parameters["darkBlur"].SetValue(BloomComponent.darkBlur);
     }
 
     // Track player positions
     [HarmonyPostfix]
     [HarmonyPatch(typeof(CamMgr), "Update")]
+    // ReSharper disable once InconsistentNaming
     private static void CamMgr_Update_Postfix(CamMgr __instance)
     {
         if (__instance != PlayerMgr.player[0].camMgr) return;
 
         TryAcquireScroll();
-        if (!SplitActive)
+        if (!SplitActive || _scrollField == null)
         {
-            _hasP2 = false;
-            return;
-        }
-
-        if (_scrollField == null)
-        {
-            _hasP2 = false;
+            HasP2 = false;
             return;
         }
 
         var p1 = MainPlayer();
         var p2 = CoopPlayer();
 
-        _hasP2 = p2 != null && p2.active && p2.charIdx >= 0
-                 && p2.charIdx < CharMgr.character.Length;
+        HasP2 = p2 is { active: true, charIdx: >= 0 } && p2.charIdx < CharMgr.character.Length;
 
-        if (p1 != null && p1.charIdx >= 0 && p1.charIdx < CharMgr.character.Length)
+        if (p1 is { charIdx: >= 0 } && p1.charIdx < CharMgr.character.Length)
             _p1Loc = CharMgr.character[p1.charIdx].loc;
-        if (_hasP2)
+        if (HasP2)
             _p2Loc = CharMgr.character[p2.charIdx].loc;
 
         _midpoint = (_p1Loc + _p2Loc) * 0.5f;
 
-        if (_hasP2)
-        {
-            float dx = Math.Abs(_p1Loc.X - _p2Loc.X) * 0.5f;
-            float dy = Math.Abs(_p1Loc.Y - _p2Loc.Y) * 0.5f;
-            ScrollManager.tL = new Vector2(ScrollManager.tL.X - dx, ScrollManager.tL.Y - dy);
-            ScrollManager.bR = new Vector2(ScrollManager.bR.X + dx, ScrollManager.bR.Y + dy);
-        }
+        if (!HasP2) return;
 
-        if (_hasP2)
-        {
-            float halfDx = Math.Abs(_p1Loc.X - _p2Loc.X) * 0.5f + 500f;
-            float halfDy = Math.Abs(_p1Loc.Y - _p2Loc.Y) * 0.5f + 500f;
-            ScrollManager.midReal = Vector2.Max(ScrollManager.midReal, new Vector2(halfDx, halfDy));
-            ScrollManager.maxReal = Vector2.Max(ScrollManager.maxReal, new Vector2(halfDx, halfDy));
-        }
+        var dx = Math.Abs(_p1Loc.X - _p2Loc.X) * 0.5f;
+        var dy = Math.Abs(_p1Loc.Y - _p2Loc.Y) * 0.5f;
+        ScrollManager.tL = new Vector2(ScrollManager.tL.X - dx, ScrollManager.tL.Y - dy);
+        ScrollManager.bR = new Vector2(ScrollManager.bR.X + dx, ScrollManager.bR.Y + dy);
+
+        var halfDx = Math.Abs(_p1Loc.X - _p2Loc.X) * 0.5f + 500f;
+        var halfDy = Math.Abs(_p1Loc.Y - _p2Loc.Y) * 0.5f + 500f;
+        ScrollManager.midReal = Vector2.Max(ScrollManager.midReal, new Vector2(halfDx, halfDy));
+        ScrollManager.maxReal = Vector2.Max(ScrollManager.maxReal, new Vector2(halfDx, halfDy));
     }
 
     // DrawGame prefix
     [HarmonyPrefix]
     [HarmonyPatch(typeof(GameDraw), "DrawGame")]
+    // ReSharper disable once InconsistentNaming
     private static void DrawGame_Prefix(object __instance)
     {
-        if (!SplitActive || !TryAcquireScroll() || !_hasP2) return;
+        if (!SplitActive || !TryAcquireScroll() || !HasP2) return;
 
-        _skipIndicators = true;
+        ShouldSkipIndicators = true;
         _skipGeneralHud = true;
         _skipGrapples = true;
 
@@ -350,6 +339,12 @@ internal static partial class SplitscreenPatch
             _savedScroll = GetScroll();
             _inSplitDraw = true;
             SetScroll(ScrollFor(_p1Loc));
+
+            // Prepare P1's layer state BEFORE the pass. GameDraw.DrawGame consumes the layer globals (glowMgr.alpha, glowMgr.lightFac) at line 165 (glowMgr.Draw), which runs BEFORE its own PrepareMainEffect at line 168.
+            // The P2 pass already prepares in DrawGame_Postfix; without this, P1's pass draws with P2's stale values, and P2's pass draws the lightmap with P1's LIVE transition values - the sharp "vignette circle" that leaked onto P2's half.
+            var p1 = PlayerMgr.player[0];
+            LayerTintCatalog.PrepareMainEffect(p1.camMgr.curLayer, p1.camMgr.prevLayer, p1.camMgr.layerTransitionFrame,
+                p1);
         }
         else
         {
@@ -364,28 +359,46 @@ internal static partial class SplitscreenPatch
     {
         if (_inP2Pass) return;
 
-        if (_inSplitDraw && (!SplitActive || !_hasP2))
+        if (_inSplitDraw && (!SplitActive || !HasP2))
         {
             SetScroll(_savedScroll);
             _inSplitDraw = false;
-            _skipIndicators = false;
+            ShouldSkipIndicators = false;
             _skipGeneralHud = false;
             _skipGrapples = false;
             return;
         }
 
-        if (!SplitActive || !TryAcquireScroll() || !_hasP2)
+        if (!SplitActive || !TryAcquireScroll() || !HasP2)
         {
-            _skipIndicators = false;
+            ShouldSkipIndicators = false;
             _skipGeneralHud = false;
             _skipGrapples = false;
             return;
         }
+
+        // P1's pass just finished: keep the background alpha it left behind for P1's next frame.
+        CaptureBgAlpha(false);
+
+        // F11 stage viewer: copy a pipeline stage of P1's pass before P2's pass overwrites the shared targets.
+        DiagCaptureStage();
 
         _inP2Pass = true;
         var savedCam = PlayerMgr.player[0].camMgr;
         try
         {
+            // EXPERIMENT: settle P1's camera during P2's pass.
+            // If the vignette disappears from P2's half, P2's pass reads P1's LIVE camera state directly somewhere.
+            var p1Cam = PlayerMgr.player[0].camMgr;
+            int p1Cur = p1Cam.curLayer, p1Prev = p1Cam.prevLayer;
+            float p1Ltf = p1Cam.layerTransitionFrame, p1Ind = p1Cam.indoors;
+            p1Cam.prevLayer = p1Cam.curLayer;
+            p1Cam.layerTransitionFrame = 1f;
+            if (LayerTintCatalog.layerTintData != null
+                && p1Cam.curLayer >= 0
+                && p1Cam.curLayer < LayerTintCatalog.layerTintData.Count)
+                p1Cam.indoors = LayerTintCatalog.layerTintData[p1Cam.curLayer].indoorf;
+
             PlayerMgr.player[0].camMgr = PlayerMgr.player[1].camMgr;
 
             var p2 = PlayerMgr.player[0];
@@ -393,7 +406,19 @@ internal static partial class SplitscreenPatch
                 p2.camMgr.curLayer, p2.camMgr.prevLayer,
                 p2.camMgr.layerTransitionFrame, p2);
 
-            _drawGameMethod?.Invoke(_dgInst, null);
+            // Separate P2 scene targets are off unless F11 mode 8 is selected (they did not change the leak).
+            SwapToP2Targets();
+
+            if (!DiagSkipP2Pass)
+            {
+                _drawGameMethod?.Invoke(_dgInst, null);
+                CaptureBgAlpha(true);
+            }
+
+            p1Cam.curLayer = p1Cur;
+            p1Cam.prevLayer = p1Prev;
+            p1Cam.layerTransitionFrame = p1Ltf;
+            p1Cam.indoors = p1Ind;
         }
         catch (Exception e)
         {
@@ -401,6 +426,7 @@ internal static partial class SplitscreenPatch
         }
         finally
         {
+            RestoreP1Targets();
             PlayerMgr.player[0].camMgr = savedCam;
             _inP2Pass = false;
         }
@@ -410,15 +436,19 @@ internal static partial class SplitscreenPatch
 
         CompositeHalves();
 
-        DrawAllPerPlayerUI();
-        DrawAllGrapples();
+        // F11 diagnostic mode 3 leaves out everything drawn after the composite, to tell a leak in the composite apart from one in the overlays.
+        if (!DiagSkipOverlays)
+        {
+            DrawAllPerPlayerUi();
+            DrawAllGrapples();
 
-        _skipGeneralHud = false;
-        SpriteTools.BeginAlpha();
-        _playerMgrDrawMethod?.Invoke(null, null);
-        SpriteTools.End();
+            _skipGeneralHud = false;
+            SpriteTools.BeginAlpha();
+            PlayerMgrDrawMethod?.Invoke(null, null);
+            SpriteTools.End();
+        }
 
-        _skipIndicators = false;
+        ShouldSkipIndicators = false;
         _skipGeneralHud = false;
         _skipGrapples = false;
     }
@@ -441,9 +471,15 @@ internal static partial class SplitscreenPatch
 
         try
         {
-            SpriteTools.BeginAlpha();
-            SpriteTools.sprite.Draw(_splitP1Targ, dstL, src, Color.White);
-            SpriteTools.sprite.Draw(_splitP2Targ, dstR, src, Color.White);
+            // Normally left = P1's pass and right = P2's pass; F11 diagnostic modes change which render each half shows.
+            var leftTarg = _splitP1Targ;
+            var rightTarg = _splitP2Targ;
+            DiagPickTargets(ref leftTarg, ref rightTarg);
+
+            DiagBeginComposite();
+            SpriteTools.sprite.Draw(leftTarg, dstL, src, Color.White);
+            SpriteTools.sprite.Draw(rightTarg, dstR, src, Color.White);
+            DrawDiagInset(screenW, screenH, halfW, src);
             SpriteTools.End();
         }
         catch (Exception e)
@@ -452,6 +488,7 @@ internal static partial class SplitscreenPatch
         }
 
         DrawDivider(screenW, screenH);
+        DrawDiagLabel();
     }
 
     // Divider
@@ -473,6 +510,13 @@ internal static partial class SplitscreenPatch
     }
 
     // Logging
-    private static void Log(string msg) => SaS2SplitScreen.Instance?.Log.LogInfo(msg);
-    private static void Warn(string msg) => SaS2SplitScreen.Instance?.Log.LogWarning(msg);
+    private static void Log(string msg)
+    {
+        SaS2SplitScreen.Instance?.Log.LogInfo(msg);
+    }
+
+    private static void Warn(string msg)
+    {
+        SaS2SplitScreen.Instance?.Log.LogWarning(msg);
+    }
 }

@@ -2,7 +2,6 @@ using System;
 using HarmonyLib;
 using ProjectMage.character;
 using ProjectMage.gamestate;
-using ProjectMage.map.entities;
 using ProjectMage.player;
 
 namespace SaS2SplitScreen;
@@ -11,8 +10,7 @@ internal static partial class SplitscreenPatch
 {
     // Rebuild char grapples from merged activeChars.
     // CharMgr.UpdateLists() resets char grapples to the current scroll view.
-    // In splitscreen it runs twice per frame (once per player prefix),
-    // so only P2's stun enemies survive into CharMgr.Update() / GetGrapple.
+    // In splitscreen it runs twice per frame (once per player prefix), so only P2's stun enemies survive into CharMgr.Update() / GetGrapple.
     // We rebuild charGrapple from the merged activeChars so BOTH players can grapple stun enemies near them.
     [HarmonyPostfix]
     [HarmonyPatch(typeof(PlayerMgr), "Update")]
@@ -22,16 +20,16 @@ internal static partial class SplitscreenPatch
         if (!SplitActive) return;
 
         _mergedActiveCharsCount = CharMgr.activeChars.total;
-        Array.Copy(CharMgr.activeChars.list, _mergedActiveChars, _mergedActiveCharsCount);
+        Array.Copy(CharMgr.activeChars.list, MergedActiveChars, _mergedActiveCharsCount);
 
         var grapples = GameSessionMgr.gameSession.mapMgr.entityMgr.grapples;
         grapples.ResetCharGrapples();
-        for (int i = 0; i < CharMgr.activeChars.total; i++)
+        for (var i = 0; i < CharMgr.activeChars.total; i++)
         {
-            int idx = CharMgr.activeChars.list[i];
+            var idx = CharMgr.activeChars.list[i];
             if (idx < 0 || idx >= CharMgr.character.Length) continue;
-            Character c2 = CharMgr.character[idx];
-            if (c2 == null || !c2.exists) continue;
+            var c2 = CharMgr.character[idx];
+            if (c2 is not { exists: true }) continue;
             if (c2.update.grappleStunFrame <= 0f) continue;
             if (grapples.charGrappleCount >= 8) break;
 
