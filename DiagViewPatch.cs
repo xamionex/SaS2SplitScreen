@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text;
 using Common;
 using HarmonyLib;
@@ -60,13 +61,13 @@ internal static partial class SplitscreenPatch
 
     private static int _diagMode;
 
+    // Set during the update phase when any player's camera is mid-transition. The draw-phase camMgr swap hides P1's camera during P2's pass, so the loggers read this instead.
+    private static bool _anyCamTransitionLive;
+
     private static bool DiagEnabled => GlobalSettings.Diagnostics?.Value == true;
 
     // Single choke point: with diagnostics disabled every mode check below sees 0 (normal), even if the config is switched off while a mode is active.
     private static int DiagMode => DiagEnabled ? _diagMode : 0;
-
-    // Set during the update phase when any player's camera is mid-transition. The draw-phase camMgr swap hides P1's camera during P2's pass, so the loggers read this instead.
-    private static bool _anyCamTransitionLive;
 
     private static bool DiagSkipOverlays => DiagMode == ModeNoOverlays;
     private static bool DiagSkipP2Pass => DiagMode == ModeSkipP2;
@@ -99,13 +100,12 @@ internal static partial class SplitscreenPatch
         _anyCamTransitionLive = false;
         if (PlayerMgr.player == null) return;
 
-        foreach (var player in PlayerMgr.player)
-        {
-            var cm = player?.camMgr;
-            if (cm == null || cm.curLayer == cm.prevLayer || cm.layerTransitionFrame >= 1f) continue;
-            _anyCamTransitionLive = true;
+        if (!PlayerMgr.player.Select(player => player?.camMgr).Any(cm =>
+                cm != null
+                && cm.curLayer != cm.prevLayer
+                && !(cm.layerTransitionFrame >= 1f)))
             return;
-        }
+        _anyCamTransitionLive = true;
     }
 
     // Edge-detected once per frame.

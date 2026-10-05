@@ -20,7 +20,8 @@ internal static partial class SplitscreenPatch
     // ReSharper disable once InconsistentNaming
     private static void MoveCoopPlayers_Prefix(CharMovement __instance, ref int pLayer, ref Vector2 pLoc)
     {
-        if (!SplitActive || __instance == null) return;
+        // ModActive, not SplitActive: while the view is merged, vanilla's screen-edge barrier would otherwise stop the players from ever getting far enough apart for the split to come back.
+        if (!ModActive || __instance == null) return;
 
         if (CharMovementCField?.GetValue(__instance) is not Character c) return;
 

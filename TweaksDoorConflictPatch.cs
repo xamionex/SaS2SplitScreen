@@ -58,7 +58,8 @@ internal static partial class SplitscreenPatch
             _configEntryValueProp.SetValue(entry, false, null);
             if (_tweaksForceOffLogged) return;
             _tweaksForceOffLogged = true;
-            Log("[Splitscreen] SaS2Tweaks 'P2 Can Trigger Doors' auto-disabled (it conflicts with splitscreen independent doors). Re-enable it in Mod Options after disabling splitscreen.");
+            Log(
+                "[Splitscreen] SaS2Tweaks 'P2 Can Trigger Doors' auto-disabled (it conflicts with splitscreen independent doors). Re-enable it in Mod Options after disabling splitscreen.");
         }
         catch (Exception e)
         {
@@ -77,7 +78,8 @@ internal static partial class SplitscreenPatch
         // Only run on P1's camera, mirroring CamMgr_Update_Postfix.
         if (__instance != PlayerMgr.player[0].camMgr) return;
 
-        if (SplitActive)
+        // ModActive: the independent-doors rewrite stays on while the view is auto-merged, so the Tweaks option has to stay forced off too.
+        if (ModActive)
             ForceTweaksP2DoorsOff();
         else
             _tweaksForceOffLogged = false;

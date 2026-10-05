@@ -101,16 +101,18 @@ internal static partial class SplitscreenPatch
         PlayerGetCharacterMethod = AccessTools.Method(typeof(Player), "GetCharacter");
         CharMgrGetVisMethod = AccessTools.Method(typeof(CharMgr), "GetVis", [typeof(Character), typeof(bool)]);
         PlayerHpBarFrameField = AccessTools.Field(typeof(Player), "hpBarFrame");
-        CharAnimSetAnimMethod = AccessTools.Method(typeof(CharAnim), "SetAnim", [typeof(string), typeof(bool), typeof(bool)]);
+        CharAnimSetAnimMethod =
+            AccessTools.Method(typeof(CharAnim), "SetAnim", [typeof(string), typeof(bool), typeof(bool)]);
         GetCharUseMethod = AccessTools.Method(typeof(PlayerPrompts), "GetCharUse", [typeof(Character)]);
         CharRectsCharacterField = AccessTools.Field(typeof(CharRects), "character");
     }
 
-    // Active guard
-    private static bool SplitActive =>
-        GlobalSettings.SplitscreenEnabled?.Value == true
-        && GameState.state == 1
-        && IsLocalCoop();
+    // ModActive: the mod is switched on and this is local co-op in gameplay. Gameplay-rule patches (independent doors, no screen-edge tether) follow this, so the players can still walk apart and the split can come back while the view is merged.
+    private static bool ModActive =>
+        GlobalSettings.SplitscreenEnabled?.Value == true && GameState.state == 1 && IsLocalCoop();
+
+    // SplitActive: the split view itself is on. Everything that draws, positions cameras or merges per-player state follows this; auto-disable (AutoDisablePatch) turns it off to hand the view back to vanilla.
+    private static bool SplitActive => ModActive && !_autoDisabled;
 
     internal static bool HasP2 { get; private set; }
 
@@ -131,8 +133,10 @@ internal static partial class SplitscreenPatch
 
         try
         {
-            _splitP1Targ = FrameworkImpl.CreateRenderTarget2D("splitP1", gfx, w, h, false, ConfigMgr.surfaceFormat, DepthFormat.None, 0, RenderTargetUsage.DiscardContents);
-            _splitP2Targ = FrameworkImpl.CreateRenderTarget2D("splitP2", gfx, w, h, false, ConfigMgr.surfaceFormat, DepthFormat.None, 0, RenderTargetUsage.DiscardContents);
+            _splitP1Targ = FrameworkImpl.CreateRenderTarget2D("splitP1", gfx, w, h, false, ConfigMgr.surfaceFormat,
+                DepthFormat.None, 0, RenderTargetUsage.DiscardContents);
+            _splitP2Targ = FrameworkImpl.CreateRenderTarget2D("splitP2", gfx, w, h, false, ConfigMgr.surfaceFormat,
+                DepthFormat.None, 0, RenderTargetUsage.DiscardContents);
             Log($"[Splitscreen] Capture targets created ({w}x{h}).");
         }
         catch (Exception e)

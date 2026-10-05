@@ -69,8 +69,22 @@ public class SaS2SplitScreen : BasePlugin
     {
         var order = 0;
 
-        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.SplitscreenEnabled, "Splitscreen", "Splitscreen", order += 1);
-        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.IndependentDoors, "Splitscreen", "Allow P1 and P2 to travel through doors independently", order += 1);
+        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.SplitscreenEnabled, "Splitscreen", "Splitscreen",
+            order += 1);
+        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.IndependentDoors, "Splitscreen",
+            "Allow P1 and P2 to travel through doors independently", order += 1);
+
+        // Second tab row. The mode is a string entry so the menu shows the readable names ("Screen Width (1/2)") instead of enum identifiers.
+        const string autoCategory = "Auto-Disable";
+        var autoOrder = 0;
+        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.AutoDisableWhenClose, "Splitscreen", autoCategory,
+            "Auto-Disable When Players Are Close", autoOrder += 1);
+        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.AutoDisableInBossFights, "Splitscreen",
+            autoCategory, "Auto-Disable in Boss-esque Fights", autoOrder += 1);
+        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.AutoDisableDistanceMode, "Splitscreen",
+            autoCategory, "Auto-Disable Distance", autoOrder += 1, acceptableValues: GlobalSettings.DistanceModes);
+        SaS2ModOptions.SaS2ModOptions.RegisterConfig(GlobalSettings.AutoDisableCustomDistance, "Splitscreen",
+            autoCategory, "Custom Distance (meters)", autoOrder += 1);
     }
 
     public override bool Unload()

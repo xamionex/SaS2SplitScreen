@@ -35,7 +35,7 @@ internal static partial class SplitscreenPatch
 
         var after = CharMgr.activeChars.total;
         if (after == before) return;
-        
+
         var now = Environment.TickCount;
         if (now - _lastActiveCharsLogTick <= 500) return;
         _lastActiveCharsLogTick = now;
