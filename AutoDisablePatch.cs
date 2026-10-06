@@ -47,6 +47,10 @@ internal static partial class SplitscreenPatch
     private static int _autoReleaseStartTick;
     private static bool _autoScaleLogged;
 
+    // Size of one screen in world units while nothing controls the camera. Takeovers zoom in (a boss intro roughly halves the visible area), which would make two players who sit side by side look "too far apart to fit" and bounce the view back to split in the middle of the cutscene.
+    private static float _refScreenW;
+    private static float _refScreenH;
+
     [HarmonyPrefix]
     [HarmonyPriority(Priority.First)]
     [HarmonyPatch(typeof(PlayerMgr), "Update")]
@@ -96,6 +100,20 @@ internal static partial class SplitscreenPatch
         var screenH = ScrollManager.bR.Y - ScrollManager.tL.Y;
         if (screenW < 200f || screenH < 100f) return;
 
+        var takeover = CameraTakeoverReason();
+
+        // Follow the live size (it grows when vanilla zooms out for distant players) but never let a takeover's zoom-in shrink it.
+        if (takeover == null && !_autoReleasing)
+        {
+            _refScreenW = screenW;
+            _refScreenH = screenH;
+        }
+        else if (_refScreenW > 0f)
+        {
+            screenW = Math.Max(screenW, _refScreenW);
+            screenH = Math.Max(screenH, _refScreenH);
+        }
+
         var dx = Math.Abs(c1.loc.X - c2.loc.X);
         var dy = Math.Abs(c1.loc.Y - c2.loc.Y);
         var unitsPerMeter = UnitsPerMeter(c1, out var playerUnits);
@@ -123,7 +141,8 @@ internal static partial class SplitscreenPatch
                    && distMeters <= limitMeters * k;
         }
 
-        var takeover = onTakeover ? CameraTakeoverReason() : null;
+        // The takeover only counts as a reason when that option is on; it was evaluated above for the screen-size reference either way.
+        if (!onTakeover) takeover = null;
 
         if (!_autoDisabled)
         {

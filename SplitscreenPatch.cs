@@ -35,6 +35,7 @@ internal static partial class SplitscreenPatch
     private static bool _inP2Pass;
     private static Vector2 _savedScroll;
     private static object _dgInst;
+    // ReSharper disable once NotAccessedField.Local
     private static Vector2 _p1Loc, _p2Loc, _midpoint;
     private static MethodInfo _drawGameMethod;
 
@@ -109,7 +110,9 @@ internal static partial class SplitscreenPatch
 
     // ModActive: the mod is switched on and this is local co-op in gameplay. Gameplay-rule patches (independent doors, no screen-edge tether) follow this, so the players can still walk apart and the split can come back while the view is merged.
     private static bool ModActive =>
-        GlobalSettings.SplitscreenEnabled?.Value == true && GameState.state == 1 && IsLocalCoop();
+        GlobalSettings.SplitscreenEnabled?.Value == true
+        && GameState.state == 1
+        && IsLocalCoop();
 
     // SplitActive: the split view itself is on. Everything that draws, positions cameras or merges per-player state follows this; auto-disable (AutoDisablePatch) turns it off to hand the view back to vanilla.
     private static bool SplitActive => ModActive && !_autoDisabled;
@@ -296,6 +299,7 @@ internal static partial class SplitscreenPatch
         if (!SplitActive || _scrollField == null)
         {
             HasP2 = false;
+            ResetHalfCameras();
             return;
         }
 
@@ -341,7 +345,7 @@ internal static partial class SplitscreenPatch
             _dgInst = __instance;
             _savedScroll = GetScroll();
             _inSplitDraw = true;
-            SetScroll(ScrollFor(_p1Loc));
+            SetScroll(HalfScroll(0));
 
             // Prepare P1's layer state BEFORE the pass. GameDraw.DrawGame consumes the layer globals (glowMgr.alpha, glowMgr.lightFac) at line 165 (glowMgr.Draw), which runs BEFORE its own PrepareMainEffect at line 168.
             // Single-camera vanilla therefore uses its own previous frame's values; with two passes it would use the OTHER player's.
@@ -352,7 +356,7 @@ internal static partial class SplitscreenPatch
         }
         else
         {
-            SetScroll(ScrollFor(_p2Loc));
+            SetScroll(HalfScroll(1));
         }
     }
 

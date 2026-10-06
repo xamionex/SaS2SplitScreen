@@ -15,6 +15,9 @@ internal static partial class SplitscreenPatch
     private static Vector2 _preP2Scroll;
     private static float _preP2Zoom;
 
+    // True only while P2's camera is force-updated, so cutscene scrolls (boss intro, intro, arena mode) that every camera update would run can be limited to P1's update.
+    private static bool _inP2CamUpdate;
+
     [HarmonyPrefix]
     [HarmonyPatch(typeof(Player), "Update")]
     // ReSharper disable once InconsistentNaming
@@ -23,17 +26,28 @@ internal static partial class SplitscreenPatch
         if (__instance.ID != 1 || !IsLocalCoop() || !SplitActive) return;
         _preP2Scroll = ScrollManager.scroll;
         _preP2Zoom = ScrollManager.zoom;
-        __instance.camMgr.Update(frameTime, realTime);
+        _inP2CamUpdate = true;
+        try
+        {
+            __instance.camMgr.Update(frameTime, realTime);
+        }
+        finally
+        {
+            _inP2CamUpdate = false;
+        }
     }
 
     [HarmonyPostfix]
     [HarmonyPatch(typeof(Player), "Update")]
     // ReSharper disable once InconsistentNaming
-    private static void Player_Update_Postfix(Player __instance)
+    private static void Player_Update_Postfix(Player __instance, float frameTime)
     {
         if (__instance.ID != 1 || !IsLocalCoop() || !SplitActive) return;
         ScrollManager.scroll = _preP2Scroll;
         ScrollManager.zoom = _preP2Zoom;
         ScrollManager.UpdateCannedValues();
+
+        // Both cameras are up to date now: work out what each half looks at.
+        UpdateHalfCameras(frameTime);
     }
 }

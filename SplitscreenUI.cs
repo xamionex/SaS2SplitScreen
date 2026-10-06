@@ -31,13 +31,13 @@ internal static partial class SplitscreenPatch
         SpriteTools.BeginAlpha();
 
         // Player 1 (left half)
-        SetScroll(ScrollFor(_p1Loc));
+        SetScroll(HalfScroll(0));
         DrawCoopMarker(p1, new Rectangle(0, 0, halfW, screenH), cropX);
         DrawNameplate(p1, new Rectangle(0, 0, halfW, screenH), cropX);
         DrawInteractionPrompt(p1, new Rectangle(0, 0, halfW, screenH), cropX);
 
         // Player 2 (right half)
-        SetScroll(ScrollFor(_p2Loc));
+        SetScroll(HalfScroll(1));
         DrawCoopMarker(p2, new Rectangle(halfW, 0, halfW, screenH), cropX);
         DrawNameplate(p2, new Rectangle(halfW, 0, halfW, screenH), cropX);
         DrawInteractionPrompt(p2, new Rectangle(halfW, 0, halfW, screenH), cropX);

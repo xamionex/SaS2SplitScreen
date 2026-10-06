@@ -20,6 +20,7 @@ internal static partial class SplitscreenPatch
     // Grapple.Update advances this.frame and spawns the star sparkle (AddAdditiveParticle 81) only when the point is within ~1000-2000 units of ScrollManager.scroll.
     // In splitscreen scroll follows P1 during grapples.Update, so points near P2 stop spawning the star when P1 moves away.
     // Prefix saves the frame; postfix advances it and spawns the star when the point is near P2 but was culled.
+    // ReSharper disable once UnusedMember.Local
     private static FieldInfo _grappleRandField = AccessTools.Field(typeof(Grapple), "Rand");
 
     // MageParticles.UpdateBaseParticles - dual-viewport culling.
@@ -75,11 +76,11 @@ internal static partial class SplitscreenPatch
         SpriteTools.BeginAlpha();
 
         // Player 1 (left half)
-        SetScroll(ScrollFor(_p1Loc));
+        SetScroll(HalfScroll(0));
         DrawGrapplesForPlayer(p1, new Rectangle(0, 0, halfW, screenH), cropX);
 
         // Player 2 (right half)
-        SetScroll(ScrollFor(_p2Loc));
+        SetScroll(HalfScroll(1));
         DrawGrapplesForPlayer(p2, new Rectangle(halfW, 0, halfW, screenH), cropX);
 
         SetScroll(savedScroll);
@@ -216,7 +217,7 @@ internal static partial class SplitscreenPatch
         if (Math.Abs(__instance.frame - __state) > 0.0001f) return;
 
         var loc = __instance.point;
-        var p2Scroll = ScrollFor(_p2Loc);
+        var p2Scroll = HalfScroll(1);
 
         // Match vanilla's culling range: 1000 normally, 2000 when zoomed out.
         var num = ScrollManager.zoom < -25f ? 2000f : 1000f;
@@ -259,7 +260,7 @@ internal static partial class SplitscreenPatch
             return; // original already updated
 
         var loc = __instance.loc;
-        var p2Scroll = ScrollFor(_p2Loc);
+        var p2Scroll = HalfScroll(1);
 
         if (!(loc.X > p2Scroll.X - 1200f) || !(loc.X < p2Scroll.X + 1200f) || !(loc.Y > p2Scroll.Y - 1000f) ||
             !(loc.Y < p2Scroll.Y + 1000f)) return;

@@ -9,8 +9,7 @@ Made with https://github.com/xamionex/SaltAndSacrificeBepInExTemplate
 
 ## Auto-Disable
 
-Optional (both off by default), under the **Auto-Disable** tab in Mod Options. While active, the view falls back to the
-normal shared-screen co-op camera and splits again when it stops applying.
+Optional (both off by default), under the **Auto-Disable** tab in Mod Options. While active, the view falls back to the normal shared-screen co-op camera and splits again when it stops applying.
 
 | Option                              | What it does                                                                                                                                                                                                                                 |
 |-------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -19,10 +18,18 @@ normal shared-screen co-op camera and splits again when it stops applying.
 | Auto-Disable Distance               | What "close" means: **Screen Width** (both players fit on one screen) or **Custom Distance**.                                                                                                                                                |
 | Custom Distance (meters)            | Used by Custom Distance. Straight-line distance between the characters. A player is 1.8 m tall, so a meter is the player's height divided by 1.8. Anything above what fits on one screen has no extra effect.                                |
 
-Players on different layers (for example one inside a cave) are never merged. The exact size of one screen in meters is
-written to the log as `[Splitscreen] Auto-disable scale`.
+Players on different layers (for example one inside a cave) are never merged. The exact size of one screen in meters is written to the log as `[Splitscreen] Auto-disable scale`.
+
+## Camera takeovers
+
+Boss intros, boss arenas, focus shots (cutscenes, NPC conversations, deaths), big messages and resting move the camera in vanilla. \
+In splitscreen each half now follows the takeover that concerns its player:
+- the intro swings to the boss and back,
+- an arena frames the boss for the players inside it,
+- a focus shot moves only the half of the player it happens near (a trigger one player walks into no longer moves the other player's view),
+- and a message pulls in on each player.
+- Zoom is shared by both halves.
 
 ## Developer diagnostics
 
-The BepInEx config entry `Debug > Diagnostics` (default off, not shown in Mod Options) enables F11 diagnostic views and
-extra render logging.
+The BepInEx config entry `Debug > Diagnostics` (default off, not shown in Mod Options) enables F11 diagnostic views and extra render logging.
