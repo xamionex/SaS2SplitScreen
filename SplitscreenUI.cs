@@ -6,6 +6,7 @@ using Menumancer.hud;
 using Menumancer.UIFormat;
 using ProjectMage.character;
 using ProjectMage.config;
+using ProjectMage.gamestate;
 using ProjectMage.map.entities;
 using ProjectMage.player;
 using ProjectMage.player.menu;
@@ -35,12 +36,14 @@ internal static partial class SplitscreenPatch
         DrawCoopMarker(p1, new Rectangle(0, 0, halfW, screenH), cropX);
         DrawNameplate(p1, new Rectangle(0, 0, halfW, screenH), cropX);
         DrawInteractionPrompt(p1, new Rectangle(0, 0, halfW, screenH), cropX);
+        DrawAimReticle(p1, new Rectangle(0, 0, halfW, screenH), cropX);
 
         // Player 2 (right half)
         SetScroll(HalfScroll(1));
         DrawCoopMarker(p2, new Rectangle(halfW, 0, halfW, screenH), cropX);
         DrawNameplate(p2, new Rectangle(halfW, 0, halfW, screenH), cropX);
         DrawInteractionPrompt(p2, new Rectangle(halfW, 0, halfW, screenH), cropX);
+        DrawAimReticle(p2, new Rectangle(halfW, 0, halfW, screenH), cropX);
 
         SetScroll(savedScroll);
         SpriteTools.End();
@@ -188,29 +191,77 @@ internal static partial class SplitscreenPatch
             new Rectangle(130, 2, 28, 28), new Color(1f, 0f, 0f, hpAlpha));
     }
 
+    // AIM RETICLE (the three chevrons in front of a player who is aiming a bow, staff or gun)
+    // Player.DrawAiming is suppressed while splitscreen draws (Player_DrawAiming_Prefix), and unlike the markers and nameplates nothing drew it again, so it never appeared.
+    // This is vanilla's DrawAiming, mapped into the player's half the same way as the coop marker.
+    private static void DrawAimReticle(Player player, Rectangle halfRect, int cropX)
+    {
+        if (!player.isLocal) return;
+
+        var c = GetCharacter(player);
+        if (c == null || c.monsterIdx < 0) return;
+
+        // Vanilla only draws once the aiming state has been seen for a frame, and keeps this flag itself, so it has to be kept here.
+        var wasAiming = player.drawAiming;
+        player.drawAiming = c.draw.aiming;
+        if (!wasAiming || !c.draw.aiming || c.update.aimDisable) return;
+
+        var monsterDef = MonsterCatalog.monsterDef[c.monsterIdx];
+        if (monsterDef == null) return;
+
+        float screenH = halfRect.Height;
+        var num3 = screenH / ScrollManager.screenSize.Y;
+        var scale = screenH / 1080f;
+
+        var screenPos = num3 * ScrollManager.GetScreenLoc(c.loc + new Vector2(0f, monsterDef.boxHeight * -0.6f), 0);
+        var origin = new Vector2(halfRect.X + screenPos.X - cropX, screenPos.Y);
+
+        var rotation = c.update.goalAimRotation;
+        if (c.face == 0) rotation += 3.1415927f;
+        var dir = new Vector2((float)Math.Cos(rotation), (float)Math.Sin(rotation));
+
+        for (var i = 0; i < 3; i++)
+        {
+            var rect = i switch
+            {
+                0 => new Rectangle(128, 640, 128, 128),
+                1 => new Rectangle(128, 480, 128, 32),
+                _ => new Rectangle(128, 512, 64, 64)
+            };
+
+            SpriteTools.sprite.Draw(UIRender.interfaceTex, origin + dir * (i + 1.85f) * 80f * scale, rect,
+                new Color(1f, 1f, 1f, (i + 1) * 0.1f), rotation, new Vector2(rect.Width / 2f, rect.Height / 2f),
+                scale * 0.5f, SpriteEffects.None, 0f);
+        }
+    }
+
     // INTERACTION PROMPT (press A to talk, etc.)
     private static void DrawInteractionPrompt(Player player, Rectangle halfRect, int cropX)
     {
         if (player.prompts.drawActive)
         {
-            var dv = player.prompts.drawVec;
-            var screenPos = ScrollManager.GetScreenLoc(dv, 0);
-            var mappedX = screenPos.X - cropX;
-            if (!(mappedX >= 0) || !(mappedX <= halfRect.Width)) return;
+            var pdv = player.prompts.drawVec;
+            var screenPromptPos = ScrollManager.GetScreenLoc(pdv, 0);
+            var mappedPromptX = screenPromptPos.X - cropX;
+            if (!(mappedPromptX >= 0) || !(mappedPromptX <= halfRect.Width)) return;
 
-            var drawPos = new Vector2(halfRect.X + mappedX, screenPos.Y);
+            var drawPromptPos = new Vector2(halfRect.X + mappedPromptX, screenPromptPos.Y);
             var scale = halfRect.Height / 1080f * 0.6f;
-            var interactText = player.prompts.InteractString();
-            if (interactText is { Length: > 0 }) Text.DrawText(interactText, drawPos, Color.White, scale, 1, player, 0);
+            var interactPromptText = player.prompts.InteractString();
+            if (interactPromptText is { Length: > 0 }) Text.DrawText(interactPromptText, drawPromptPos, Color.White, scale, 1, player, 0);
 
             return;
         }
 
         // Fallback: characters sometimes aren't picked up by vanilla GetCharUse in splitscreen, due to activeChars mismatch or timing.
-        // We draw the prompt manually for nearby interactable(s) that vanilla missed.
+        // We draw the prompt manually for a nearby interactable that vanilla missed, using vanilla's own range and position rules (PlayerPrompts.GetCharUse / Update), so the prompt appears and sits exactly where it would have.
         var pc = GetCharacter(player);
         if (pc == null || pc.dyingFrame > 0f) return;
         if (player.dialog.active) return;
+
+        Character best = null;
+        MonsterDef bestDef = null;
+        var bestDist = float.MaxValue;
 
         foreach (var c in CharMgr.character)
         {
@@ -220,6 +271,10 @@ internal static partial class SplitscreenPatch
             if (monsterDef == null) continue;
 
             var canInteract = false;
+
+            // Vanilla's flag3 (only a short way in front, boss doors) and flag2 (one side).
+            var frontHalf = false;
+            var frontSide = false;
             switch (monsterDef.type)
             {
                 case 0:
@@ -241,7 +296,18 @@ internal static partial class SplitscreenPatch
                     break;
                 case 6:
                     if (c.anim.canInteract)
+                    {
                         canInteract = true;
+                        if (monsterDef.flags.Contains(5))
+                        {
+                            frontSide = true;
+                            if (GameSessionMgr.gameSession.mapMgr.arenas.active > -1)
+                                canInteract = false;
+                            else if (c.anim.animName == "phasetwo")
+                                frontHalf = true;
+                        }
+                    }
+
                     break;
                 case 7:
                     if (c.anim.animName == "switch" || c.anim.animName == "activated")
@@ -251,26 +317,53 @@ internal static partial class SplitscreenPatch
 
             if (!canInteract) continue;
 
-            var rangeX = 200f + monsterDef.boxWidth / 2f;
-            const float rangeY = 250f;
-            if (Math.Abs(pc.loc.X - c.loc.X) > rangeX) continue;
-            if (Math.Abs(pc.loc.Y - c.loc.Y) > rangeY) continue;
+            // Vanilla's range test: the player's position against the object's, strictly inside.
+            var reach = 100f + monsterDef.boxWidth / 2f;
+            var left = -reach;
+            var right = reach;
+            if (frontHalf)
+            {
+                if (c.face == 0) left = 0f;
+                else right = 0f;
+                left *= 0.5f;
+                right *= 0.5f;
+            }
+            else if (frontSide)
+            {
+                if (c.face == 0) left = right * 0.5f;
+                else right = left * 0.5f;
+            }
 
-            var dv = new Vector2(c.loc.X, c.loc.Y - monsterDef.boxHeight);
-            if (c.zipPairIdx > -1)
-                dv.Y = c.loc.Y - monsterDef.boxHeight - 52f;
+            if (pc.loc.X <= c.loc.X + left || pc.loc.X >= c.loc.X + right) continue;
+            if (pc.loc.Y <= c.loc.Y - 50f || pc.loc.Y >= c.loc.Y + 50f) continue;
 
-            var screenPos = ScrollManager.GetScreenLoc(dv, 0);
-            var mappedX = screenPos.X - cropX;
-            if (mappedX < 0 || mappedX > halfRect.Width) continue;
+            // Like vanilla, the closest one wins.
+            var dist = Math.Abs(pc.loc.X - c.loc.X);
+            if (dist >= bestDist) continue;
 
-            var drawPos = new Vector2(halfRect.X + mappedX, screenPos.Y);
-            var scale = halfRect.Height / 1080f * 0.6f;
-            var interactText = player.prompts.InteractString();
-            if (interactText is { Length: > 0 })
-                Text.DrawText(interactText, drawPos, Color.White, scale, 1, player, 0);
-            return;
+            best = c;
+            bestDef = monsterDef;
+            bestDist = dist;
         }
+
+        if (best == null) return;
+
+        // Vanilla's drawVec: the top of the object, or above the player for boss doors, or above a zipline.
+        var dv = new Vector2(best.loc.X, best.rects.topVal.Y);
+        if (bestDef.type == 6 && bestDef.flags.Contains(5))
+            dv = pc.loc + new Vector2(0f, -230f);
+        if (best.zipPairIdx > -1)
+            dv.Y = best.loc.Y - bestDef.boxHeight - 52f;
+
+        var screenPos = ScrollManager.GetScreenLoc(dv, 0);
+        var mappedX = screenPos.X - cropX;
+        if (mappedX < 0 || mappedX > halfRect.Width) return;
+
+        var drawPos = new Vector2(halfRect.X + mappedX, screenPos.Y);
+        var promptScale = halfRect.Height / 1080f * 0.6f;
+        var interactText = player.prompts.InteractString();
+        if (interactText is { Length: > 0 })
+            Text.DrawText(interactText, drawPos, Color.White, promptScale, 1, player, 0);
     }
 
     // Harmony patches to suppress original drawing during capture

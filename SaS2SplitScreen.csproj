@@ -5,7 +5,7 @@
         <AssemblyName>amione.SaS2SplitScreen</AssemblyName>
         <Product>SaS2SplitScreen</Product>
         <ProductDescription>Adds splitscreen support for local co-op in Salt and Sacrifice, configurable using Mod Options</ProductDescription>
-        <Version>1.0.2</Version>
+        <Version>1.0.3</Version>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <LangVersion>latest</LangVersion>
         <RootNamespace>$(Product)</RootNamespace>
