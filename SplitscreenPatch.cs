@@ -115,7 +115,7 @@ internal static partial class SplitscreenPatch
         && IsLocalCoop();
 
     // SplitActive: the split view itself is on. Everything that draws, positions cameras or merges per-player state follows this; auto-disable (AutoDisablePatch) turns it off to hand the view back to vanilla.
-    private static bool SplitActive => ModActive && !_autoDisabled;
+    private static bool SplitActive => ModActive && !_autoDisabled && !DiagForceMerged;
 
     internal static bool HasP2 { get; private set; }
 
@@ -188,6 +188,9 @@ internal static partial class SplitscreenPatch
     private static void SetScroll(Vector2 v)
     {
         _scrollField.SetValue(null, v);
+
+        // Vanilla never changes the scroll without refreshing the cached per-depth values right after (CamMgr.Update does both together).
+        ScrollManager.UpdateCannedValues();
     }
 
     private static Vector2 ScrollFor(Vector2 p)
@@ -263,9 +266,12 @@ internal static partial class SplitscreenPatch
         return c.loc + new Vector2(0f, -headOff);
     }
 
-    // BloomComponent.Draw prefix - redirect goalTarg to the active pass's capture target, and set the bloom combine shader parameters that BloomComponent.Draw does NOT set: BloomVignette, lightThresh, darkBlur.
-    // The decompiled game never writes these three anywhere, so they cannot carry state between the passes; setting them here from the pass's own bloom statics is a deviation from vanilla that predates the real fix (BackgroundAlphaPatch).
-    // Kept so the picture does not change; it is a candidate for removal if vanilla's look is preferred.
+    // BloomComponent.Draw prefix - redirect goalTarg to the active pass's capture target.
+    // The combine shader also has BloomVignette, lightThresh and darkBlur parameters.
+    // Vanilla never writes them, so they always hold the shader's own defaults, and the layer data behind the bloomThreshhold and darkBlur statics is never read by the game.
+    // An earlier version set all three from those statics on every pass.
+    // In areas whose layer data is non-zero (the lantern underhang on the first map) that changed the lighting: the sunlight vanished and only the lamps lit the scene.
+    // Left alone, as in vanilla.
     [HarmonyPrefix]
     [HarmonyPatch(typeof(BloomComponent), "Draw")]
     private static void BloomDraw_Prefix(ref RenderTarget2D goalTarg)
@@ -278,13 +284,6 @@ internal static partial class SplitscreenPatch
             true when _splitP2Targ != null => _splitP2Targ,
             _ => goalTarg
         };
-
-        // bloomCombineEffect is private, so use reflection.
-        var combineEff = AccessTools.Field(typeof(BloomComponent), "bloomCombineEffect")?.GetValue(null) as Effect;
-        if (combineEff == null) return;
-        combineEff.Parameters["BloomVignette"].SetValue(BloomComponent.bloomVignette);
-        combineEff.Parameters["lightThresh"].SetValue(BloomComponent.bloomThreshhold);
-        combineEff.Parameters["darkBlur"].SetValue(BloomComponent.darkBlur);
     }
 
     // Track player positions

@@ -25,6 +25,7 @@ namespace SaS2SplitScreen;
 //   6  P2's final render on both halves (inset: P1)
 //   7  normal composite, nothing drawn after it
 //   8  normal view with the background-alpha fix OFF, for A/B (see BackgroundAlphaPatch.cs)
+//   9  FORCED merged view: the vanilla single camera, for comparing split against vanilla at the same spot
 //
 // Use: put the pass you want to inspect on screen, then provoke the effect with the OTHER player (e.g. walk them through a cave entrance).
 // ============================================================================
@@ -39,6 +40,7 @@ internal static partial class SplitscreenPatch
     private const int ModeP2Both = 6;
     private const int ModeNoOverlays = 7;
     private const int ModeBgAlphaFixOff = 8;
+    private const int ModeForceMerged = 9;
 
     private static bool _diagKeyDown;
 
@@ -52,7 +54,8 @@ internal static partial class SplitscreenPatch
         "P1 final on both halves (inset: P2)",
         "P2 final on both halves (inset: P1)",
         "composite only, no overlays/HUD",
-        "background-alpha fix OFF (previous behaviour)"
+        "background-alpha fix OFF (previous behaviour)",
+        "FORCED merged view (vanilla single camera) for A/B"
     ];
 
     // One reusable copy target for whichever pipeline stage is being viewed.
@@ -61,17 +64,20 @@ internal static partial class SplitscreenPatch
 
     private static int _diagMode;
 
-    // Set during the update phase when any player's camera is mid-transition. The draw-phase camMgr swap hides P1's camera during P2's pass, so the loggers read this instead.
-    private static bool _anyCamTransitionLive;
-
     private static bool DiagEnabled => GlobalSettings.Diagnostics?.Value == true;
 
     // Single choke point: with diagnostics disabled every mode check below sees 0 (normal), even if the config is switched off while a mode is active.
     private static int DiagMode => DiagEnabled ? _diagMode : 0;
 
+    // Set during the update phase when any player's camera is mid-transition. The draw-phase camMgr swap hides P1's camera during P2's pass, so the loggers read this instead.
+    private static bool _anyCamTransitionLive;
+
     private static bool DiagSkipOverlays => DiagMode == ModeNoOverlays;
     private static bool DiagSkipP2Pass => DiagMode == ModeSkipP2;
     private static bool DiagBgAlphaFixOff => DiagMode == ModeBgAlphaFixOff;
+
+    // Mode 9 hands the whole view back to vanilla, so the same spot can be compared split and merged with one key.
+    private static bool DiagForceMerged => DiagMode == ModeForceMerged;
     private static bool DiagStageMode => DiagMode >= ModeStageBack && DiagMode <= ModeStageScene;
 
     // Runs on every camera update; the key is polled once per frame, from P1's camera (which updates every tick in splitscreen).
@@ -87,7 +93,8 @@ internal static partial class SplitscreenPatch
             return;
         }
 
-        if (!SplitActive) return;
+        // ModActive, not SplitActive: the key has to keep working while the forced merged view is on.
+        if (!ModActive) return;
 
         UpdateTransitionLiveFlag();
 
@@ -100,12 +107,9 @@ internal static partial class SplitscreenPatch
         _anyCamTransitionLive = false;
         if (PlayerMgr.player == null) return;
 
-        if (!PlayerMgr.player.Select(player => player?.camMgr).Any(cm =>
-                cm != null
-                && cm.curLayer != cm.prevLayer
-                && !(cm.layerTransitionFrame >= 1f)))
-            return;
-        _anyCamTransitionLive = true;
+        if (PlayerMgr.player.Select(player => player?.camMgr).Any(cm =>
+                cm != null && cm.curLayer != cm.prevLayer && !(cm.layerTransitionFrame >= 1f)))
+            _anyCamTransitionLive = true;
     }
 
     // Edge-detected once per frame.
@@ -194,11 +198,13 @@ internal static partial class SplitscreenPatch
         }
     }
 
-    // The stage copies can have partial alpha, so they are composited opaque; every other mode keeps the normal alpha composite.
+    // The split targets are written by the bloom combine with an opaque blend (as vanilla writes the backbuffer), so whatever alpha the shader outputs ends up in them.
+    // Vanilla never sees that alpha because the backbuffer ignores it.
+    // Compositing the halves with an alpha blend let it through: wherever the scene's alpha was below 1 the picture was blended with the black backbuffer, which darkened and "fogged" the lit areas.
+    // The halves therefore have to be composited opaque, exactly like the combine pass itself.
     private static void DiagBeginComposite()
     {
-        if (DiagStageMode) SpriteTools.BeginOpaque(null);
-        else SpriteTools.BeginAlpha();
+        SpriteTools.BeginOpaque(null);
     }
 
     // Called inside the composite's sprite batch.
