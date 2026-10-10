@@ -23,7 +23,7 @@ public static class GlobalSettings
         SplitscreenEnabled = cfg.Bind(section, "Splitscreen", true,
             "Splits the screen vertically in local co-op.\n" +
             "Left half shows Player 1's view; right half shows Player 2's view.");
-        IndependentDoors = cfg.Bind(section, "Allow P1 and P2 to travel through doors independently", false,
+        IndependentDoors = cfg.Bind(section, "Allow P1 and P2 to travel through doors independently", true,
             "When enabled, walking through a layer-change door moves only the triggering player.\n" +
             "The other player stays where they are.");
         AutoDisableWhenClose = cfg.Bind(section, "AutoDisableWhenClose", false,
